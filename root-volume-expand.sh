@@ -2,7 +2,10 @@
 set -o errexit
 set -o nounset
 
-size=40
+if [[ -z "$size" ]]; then
+  # Set a reasonable default size if unset
+  size=40
+fi
 
 oldvolumeid=$(ec2-describe-instances $instanceid |egrep "^BLOCKDEVICE./dev/sda1" | cut -f3)
 zone=$(ec2-describe-instances $instanceid |grep "^INSTANCE" | cut -f12)
