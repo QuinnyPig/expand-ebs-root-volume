@@ -36,8 +36,23 @@ if [ ! $region ]; then
   region="us-east-1"
 fi
 
-oldvolumeid=$(ec2-describe-instances $instanceid --region=$region|egrep "^BLOCKDEVICE./dev/sda1" | cut -f3)
-zone=$(ec2-describe-instances $instanceid --region=$region|grep "^INSTANCE" | cut -f12)
+rootdevice=$(aws ec2 describe-instances \
+  --region "$region" \
+  --instance-ids $instanceid \
+  --output text \
+  --query 'Reservations[*].Instances[*].RootDeviceName')
+
+oldvolumeid=$(aws ec2 describe-instances \
+  --region "$region" \
+  --instance-ids $instanceid \
+  --output text \
+  --query 'Reservations[*].Instances[*].BlockDeviceMappings[?DeviceName==`'$rootdevice'`].[Ebs.VolumeId]')
+
+zone=$(aws ec2 describe-instances \
+  --region "$region" \
+  --instance-ids $instanceid \
+  --output text \
+  --query 'Reservations[*].Instances[*].Placement.AvailabilityZone')
 
 if [ ! $zone ]; then
   echo "can't find availability zone!"
@@ -78,40 +93,90 @@ else
         exit 1
 fi
 
+zone=$(aws ec2 describe-instances $instanceid --region=$region|grep "^INSTANCE" | cut -f12)
+aws ec2 stop-instances \
+  --region "$region" \
+  --instance-ids $instanceid
+aws ec2 wait instance-stopped \
+  --region "$region" \
+  --instance-ids $instanceid
+
 echo "OK. Stopping instance $instanceid in region $region and zone $zone with original volume $oldvolumeid now."
 ec2-stop-instances $instanceid --region=$region
 
 if [[ checkvol == 1 ]]; then
     echo "detaching volume..."
     while ! ec2-detach-volume $oldvolumeid --region=$region; do sleep 5; done
+    aws ec2 detach-volume \
+      --region "$region" \
+      --volume-id $oldvolumeid
+    aws ec2 wait volume-available \
+      --region "$region" \
+      --volume-ids $oldvolumeid
 fi
 
-snapshotid=$(ec2-create-snapshot $oldvolumeid --region=$region| cut -f2)
-echo "Now Running: while ec2-describe-snapshots $snapshotid | grep -q pending; do sleep 10; done"
-while ec2-describe-snapshots $snapshotid --region=$region| grep -q pending; do sleep 10;echo "snapshot still pending..."; done
+snapshotid=$(aws ec2 create-snapshot \
+  --region "$region" \
+  --volume-id "$oldvolumeid" \
+  --output text \
+  --query 'SnapshotId')
+aws ec2 wait snapshot-completed \
+  --region "$region" \
+  --snapshot-ids "$snapshotid"
 echo "snapshot: $snapshotid"
+
 echo "creating new volume..."
-newvolumeid=$(ec2-create-volume --region=$region --availability-zone $zone --size $size --snapshot $snapshotid | cut -f2)
+newvolumeid=$(aws ec2 create-volume \
+  --region "$region" \
+  --availability-zone "$zone" \
+  --size "$size" \
+  --snapshot "$snapshotid" \
+  --output text \
+  --query 'VolumeId')
+
 echo "new volume: $newvolumeid. waiting for volume creation to finish..."
 
 # Waiting for volume to create
 sleep 15
 echo "attaching new volume to $instanceid"
-ec2-attach-volume --instance $instanceid --region=$region --device /dev/sda1 $newvolumeid
+aws ec2 attach-volume \
+  --region "$region" \
+  --instance "$instanceid" \
+  --device "$rootdevice" \
+  --volume-id "$newvolumeid"
+aws ec2 wait volume-in-use \
+  --region "$region" \
+  --volume-ids "$newvolumeid"
 
-while ! ec2-describe-volumes $newvolumeid --region=$region | grep -q attached; do sleep 10; echo "waiting for volume to attach..."; done
 echo "starting instance..."
-ec2-start-instances $instanceid --region=$region
-while ! ec2-describe-instances $instanceid --region=$region | grep -q running; do sleep 10; echo "waiting for instance to start..."; done
-ec2-describe-instances $instanceid --region=$region
+aws ec2 start-instances \
+  --region "$region" \
+  --instance-ids "$instanceid"
+aws ec2 wait instance-running \
+  --region "$region" \
+  --instance-ids "$instanceid"
+aws ec2 describe-instances \
+  --region "$region" \
+  --instance-ids "$instanceid"
+
 echo "deleting snapshot of resized volume"
-ec2-delete-snapshot $snapshotid --region=$region
-echo "When satisfied, you can run `ec2delvol $oldvolumeid --region=$region` to clean up the old volume."
+aws ec2 delete-snapshot \
+  --region "$region" \
+  --snapshot-id "$snapshotid"
+
+echo "When satisfied, you can run 
+`aws ec2 delete-volume \
+  --region $region \
+  --volume-id $oldvolumeid`
+ to clean up the old volume."
+
 printf "Would you like to clean up the old volume now? [Y/n] :"
 read DELETE
 if [[ $DELETE == "y" ]] || [[ $DELETE == "Y" ]]; then
         echo "Acknowledged, deleting old volume."
-        ec2delvol $oldvolumeid --region=$region
+        aws ec2 delete-volume \
+          --region "$region" \
+          --volume-id "$oldvolumeid"
 else
         echo "Acknowledged, Y was not chosen. Exiting."
         exit 1
