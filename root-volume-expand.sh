@@ -100,7 +100,7 @@ aws ec2 wait instance-stopped \
   --region "$region" \
   --instance-ids $instanceid
 
-if [[ checkvol == 1 ]]; then
+if [[ $checkvol == 1 ]]; then
     echo "detaching volume..."
     aws ec2 detach-volume \
       --region "$region" \
@@ -110,6 +110,7 @@ if [[ checkvol == 1 ]]; then
       --volume-ids $oldvolumeid
 fi
 
+echo "Creating snapshot..."
 snapshotid=$(aws ec2 create-snapshot \
   --region "$region" \
   --volume-id "$oldvolumeid" \
@@ -132,7 +133,10 @@ newvolumeid=$(aws ec2 create-volume \
 echo "new volume: $newvolumeid. waiting for volume creation to finish..."
 
 # Waiting for volume to create
-sleep 15
+aws ec2 wait volume-available \
+  --region "$region" \
+  --volume-ids $newvolumeid
+
 echo "attaching new volume to $instanceid"
 aws ec2 attach-volume \
   --region "$region" \
@@ -158,12 +162,6 @@ echo "deleting snapshot of resized volume"
 aws ec2 delete-snapshot \
   --region "$region" \
   --snapshot-id "$snapshotid"
-
-echo "When satisfied, you can run 
-`aws ec2 delete-volume \
-  --region $region \
-  --volume-id $oldvolumeid`
- to clean up the old volume."
 
 printf "Would you like to clean up the old volume now? [Y/n] :"
 read DELETE
