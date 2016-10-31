@@ -93,7 +93,6 @@ else
         exit 1
 fi
 
-zone=$(aws ec2 describe-instances $instanceid --region=$region|grep "^INSTANCE" | cut -f12)
 aws ec2 stop-instances \
   --region "$region" \
   --instance-ids $instanceid
@@ -101,12 +100,8 @@ aws ec2 wait instance-stopped \
   --region "$region" \
   --instance-ids $instanceid
 
-echo "OK. Stopping instance $instanceid in region $region and zone $zone with original volume $oldvolumeid now."
-ec2-stop-instances $instanceid --region=$region
-
 if [[ checkvol == 1 ]]; then
     echo "detaching volume..."
-    while ! ec2-detach-volume $oldvolumeid --region=$region; do sleep 5; done
     aws ec2 detach-volume \
       --region "$region" \
       --volume-id $oldvolumeid
